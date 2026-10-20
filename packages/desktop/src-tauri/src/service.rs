@@ -19,7 +19,7 @@ pub struct ServiceProcess {
 fn ready_address(value: &serde_json::Value, pid: u32) -> Result<String, String> {
     if value["protocol"] == "ofm-desktop-error/v1" {
         return Err(if value["code"] == "DATA_DIRECTORY_IN_USE" {
-            "数据目录已被服务占用，请先停止已有独立服务；不会删除它的锁文件"
+            "数据目录已有服务运行，或锁文件归属无法确认；请先从托盘退出已有程序。已确认失效的锁会自动回收"
         } else {
             "后端服务启动失败，请检查安装资源和数据目录权限"
         }

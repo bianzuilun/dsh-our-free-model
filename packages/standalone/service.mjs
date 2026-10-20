@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
 import crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { createModelRuntime, createRuntimeStores } from '../../src/core/runtime.js'
 import { generateKey, rankLanAddresses, startForwardServer, startLanRelay } from '../../src/forward.js'
 import { isLoopbackHost } from '../../src/trust.js'
@@ -42,6 +43,26 @@ async function acquireProcessGuard(dataDir) {
   return () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
 }
 
+async function lockOwnerExited(owner, stat) {
+  try { process.kill(owner.pid, 0) }
+  catch (error) { return error.code === 'ESRCH' }
+  if (process.platform !== 'win32') return false
+
+  // Windows 会复用 PID。当前进程若晚于锁文件创建/写入，就不可能是原持有者。
+  // 使用系统自带 PowerShell 的固定路径；查询失败、无权限或时间不明确均保留锁。
+  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows',
+    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const script = `$ErrorActionPreference = 'Stop'; [Console]::Write((Get-Process -Id ${owner.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [Globalization.CultureInfo]::InvariantCulture))`
+  const startedAt = await new Promise(resolve => {
+    execFile(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8', windowsHide: true, timeout: 3000, maxBuffer: 4096,
+    }, (error, output) => resolve(error ? NaN : Date.parse(output.trim())))
+  })
+  const writtenAt = Math.max(stat.birthtimeMs, stat.mtimeMs)
+  // 为文件系统时间精度留出余量，不凭进程名或端口占用判断归属。
+  return Number.isFinite(startedAt) && Number.isFinite(writtenAt) && startedAt > writtenAt + 1000
+}
+
 async function acquireServiceLock(dataDir) {
   const releaseGuard = await acquireProcessGuard(dataDir)
   const lockFile = path.join(dataDir, 'service.lock')
@@ -68,13 +89,10 @@ async function acquireServiceLock(dataDir) {
       let owner
       try { owner = JSON.parse(previous) } catch { throw error }
       if (owner?.product !== PRODUCT || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) throw error
-      // 只有 ESRCH 能证明进程已经退出；无权限、PID 复用等情况均保留原锁。
-      let exited = false
-      try { process.kill(owner.pid, 0) }
-      catch (probeError) { exited = probeError.code === 'ESRCH' }
-      if (!exited) throw error
+      if (!await lockOwnerExited(owner, previousStat)) throw error
       const current = fs.lstatSync(lockFile)
       if (current.dev !== previousStat.dev || current.ino !== previousStat.ino ||
+          current.mtimeMs !== previousStat.mtimeMs || current.ctimeMs !== previousStat.ctimeMs ||
           fs.readFileSync(lockFile, 'utf8') !== previous) throw error
       fs.unlinkSync(lockFile)
       lock = fs.openSync(lockFile, 'wx', 0o600)

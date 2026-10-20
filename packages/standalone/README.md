@@ -35,7 +35,7 @@ npm run start:standalone -- --port 18900 --data-dir F:\ofm-data
 - API Key 为此产品单独生成，保存在该目录的 `settings.json` 的 `forwardKey` 字段。
 - `GET /health` 提供不含凭据的产品状态；推理接口与模型清单需要 `Authorization: Bearer <API Key>`。
 - 同一个数据目录只能启动一个本地服务实例。正常退出会清除 `service.lock`。
-- 异常退出后若锁仍存在，先检查锁文件记录的 PID，确认旧进程已停止，再移除该锁文件。
+- Windows 和 Linux 会自动回收已确认进程退出的旧锁；Windows 还会核对进程启动时间，避免 PID 被复用后误报占用。无法确认归属时保留锁，请先从托盘退出已有服务。
 - 管理页面和管理 API 只监听回环地址；局域网推理需要显式开启独立中继。
 
 插件仍使用 `DSH_HOME/our-free-model` 或 `~/.dsh/our-free-model`，两者默认互不影响。
