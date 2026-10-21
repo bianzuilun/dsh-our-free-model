@@ -1,0 +1,67 @@
+name: Windows lock-fix release
+
+on:
+  push:
+    branches: [codex/fix-service-lock]
+    paths: [.github/workflows/build-windows-lockfix.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-lockfix-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'bianzuilun/dsh-our-free-model'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Prepare frontend and build tools
+        shell: pwsh
+        run: |
+          npm ci --prefix packages/standalone --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-standalone-ui.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci --prefix packages/desktop --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile Windows x64 installer
+        env:
+          CI: true
+        run: npm --prefix packages/desktop run build -- --bundles nsis
+      - name: Prepare draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installers = @(Get-ChildItem -LiteralPath packages/desktop/src-tauri/target/release/bundle/nsis -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Expected one complete NSIS installer' }
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $asset = 'Our-Free-Model_2.5.4-lockfix.1_windows-x64-setup.exe'
+          Copy-Item -LiteralPath $installers[0].FullName -Destination (Join-Path dist $asset)
+          $digest = (Get-FileHash -LiteralPath (Join-Path dist $asset) -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$digest  $asset" | Set-Content -LiteralPath dist/SHA256SUMS.txt -Encoding utf8NoBOM
+          $notes = @"
+          这是 bianzuilun fork 的非官方 Windows x64 社区修复构建，桌面与独立服务版本为 2.5.4，修复标识为 lockfix.1。
+
+          修复异常退出后残留 service.lock 导致无法启动的问题，核对 Windows 进程启动时间，处理旧 PID 被无关进程复用时的占用误报。无法确认归属时保留锁。
+
+          安装包内含 Node.js v24.18.0 x64、服务资源和完整许可证。安装前请从系统托盘退出旧版程序，已有账号和配置保留。
+
+          按本次要求未运行测试，未进行安装或启动验证。安装包未进行 Windows 代码签名。
+
+          构建提交：$env:GITHUB_SHA
+          安装包 SHA-256：$digest
+          "@
+          $notes | Set-Content -LiteralPath dist/RELEASE-NOTES.md -Encoding utf8NoBOM
+          gh release create ofm-windows-2.5.4-lockfix.1 (Join-Path dist $asset) dist/SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --draft --title 'Our Free Model 2.5.4 Windows x64 锁修复版（非官方）' --notes-file dist/RELEASE-NOTES.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "Installer SHA256: $digest" >> $env:GITHUB_STEP_SUMMARY
+          "Installer bytes: $((Get-Item -LiteralPath (Join-Path dist $asset)).Length)" >> $env:GITHUB_STEP_SUMMARY
