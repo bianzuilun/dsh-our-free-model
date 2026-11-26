@@ -154,7 +154,7 @@ try {
     const recovered = await startStandalone({ dataDir: directory, port: 0, refresh: false, logger: { warn() {} } })
     await recovered.close()
   })
-  if (process.platform === 'win32' || process.platform === 'linux') {
+  if (process.platform === 'win32' || process.platform === 'linux' || process.platform === 'darwin') {
     await check('没有权限检查进程时保留锁，不把 EPERM 当成进程退出', async () => {
       const directory = path.join(scratch, 'permission-lock')
       const lockFile = path.join(directory, 'service.lock')
@@ -169,6 +169,29 @@ try {
       } finally { process.kill = nativeKill }
     })
   }
+  await check('回收 PID 已不存在的陈旧锁并重建', async () => {
+    const directory = path.join(scratch, 'stale-lock')
+    const lockFile = path.join(directory, 'service.lock')
+    fs.mkdirSync(directory)
+    const dead = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
+    const deadPid = dead.pid
+    await new Promise(resolve => dead.once('exit', resolve))
+    // 只有 ESRCH 能证明进程已退出；先确认 PID 确实不存在，避免复用造成误判。
+    let gone = false
+    for (let attempt = 0; attempt < 20 && !gone; attempt++) {
+      try { process.kill(deadPid, 0) } catch (error) { gone = error.code === 'ESRCH' }
+      if (!gone) await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    assert.equal(gone, true, '已退出的子进程 PID 应返回 ESRCH')
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: deadPid, product: 'our-free-model-standalone', token: 'stale' }))
+    const recovered = await startStandalone({ dataDir: directory, port: 0, refresh: false, logger: { warn() {} } })
+    try {
+      const owner = JSON.parse(fs.readFileSync(lockFile, 'utf8'))
+      assert.equal(owner.pid, process.pid)
+      assert.notEqual(owner.token, 'stale')
+    } finally { await recovered.close() }
+    assert.equal(fs.existsSync(lockFile), false)
+  })
   await check('the listener starts while its upstream listing is held', async () => {
     holdListing = new Promise(resolve => { unhold = resolve })
     listingStarted = new Promise(resolve => { signalListingStarted = resolve })

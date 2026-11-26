@@ -61,7 +61,9 @@ async function acquireServiceLock(dataDir) {
   try {
     try { lock = fs.openSync(lockFile, 'wx', 0o600) }
     catch (error) {
-      if (error.code !== 'EEXIST' || !releaseGuard) throw error
+      if (error.code !== 'EEXIST') throw error
+      // macOS 没有可用的进程互斥端点，回收陈旧锁时直接依据锁内容与进程状态判断。
+      if (!releaseGuard && process.platform !== 'darwin') throw error
       const previousStat = fs.lstatSync(lockFile)
       if (!previousStat.isFile()) throw error
       const previous = fs.readFileSync(lockFile, 'utf8')
